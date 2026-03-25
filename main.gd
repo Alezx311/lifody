@@ -13,7 +13,12 @@ var catalyst: CatalystEvents
 var ui: GameUI
 var camera: Camera2D
 
+var quad_mode: QuadGridMode = null
+var quad_ui: QuadGridUI = null
+var _in_quad_mode: bool = false
+
 var _panning: bool = false
+var _fit_zoom: float = 1.0
 
 
 func _ready() -> void:
@@ -99,16 +104,21 @@ func _wire_signals() -> void:
 	# Viewport resize → re-center camera
 	get_viewport().size_changed.connect(_on_viewport_resized)
 
+	ui.quad_mode_requested.connect(_on_quad_mode_requested)
+
 
 # ────────────────────────────────────────────────────────────────────────────
 #  Game loop
 # ────────────────────────────────────────────────────────────────────────────
 
 func _start_game() -> void:
+	grid.resize_grid(30, 20, 28)
+	tonal.setup(30, 20)
 	_reset_camera()
-	grid.seed_random(0.28)
-	grid.running = true
+	# Start empty in draw mode — let the player paint or pick from library
+	grid.running = false
 	audio.set_tempo(120.0)
+	tool_mgr.set_tool(ToolManager.Tool.DRAW)
 
 
 func _on_tick(tick_num: int) -> void:
@@ -183,6 +193,21 @@ func _cluster_center_or_grid_center(cluster_id: int) -> Vector2i:
 # ────────────────────────────────────────────────────────────────────────────
 
 func _unhandled_input(event: InputEvent) -> void:
+	# ── Quad mode: route keyboard shortcuts, block camera pan/zoom ───────────
+	if _in_quad_mode and quad_mode:
+		if event is InputEventKey and (event as InputEventKey).pressed:
+			var key := (event as InputEventKey).keycode
+			match key:
+				KEY_SPACE:
+					quad_mode.toggle_panel_pause(quad_mode.active_panel)
+				KEY_R:
+					quad_mode.seed_panel(quad_mode.active_panel, "random")
+				KEY_C:
+					quad_mode.clear_panel(quad_mode.active_panel)
+				KEY_1, KEY_2, KEY_3, KEY_4:
+					quad_mode.set_active(key - KEY_1)
+		return
+
 	# ── Camera: pan with middle mouse ───────────────────────────────────────
 	if event is InputEventMouseButton:
 		var mbe := event as InputEventMouseButton
@@ -199,6 +224,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and _panning:
 		var mme := event as InputEventMouseMotion
 		camera.position -= mme.relative / camera.zoom.x
+		_clamp_camera()
 		get_viewport().set_input_as_handled()
 
 	# ── Keyboard shortcuts ───────────────────────────────────────────────────
@@ -246,10 +272,10 @@ func _on_grid_resize(w: int, h: int, cs: int) -> void:
 	tonal.setup(w, h)
 	cluster_mgr.clusters.clear()
 	cluster_mgr._prev_clusters.clear()
-	grid.seed_random(0.28)
 	ui.update_cluster_display([])
 	ui.update_tick(0)
 	_reset_camera()
+	_update_camera_limits()
 
 
 func _on_viewport_resized() -> void:
@@ -266,37 +292,114 @@ func _toggle_fullscreen() -> void:
 
 func _zoom_camera(factor: float, screen_pos: Vector2) -> void:
 	var old_zoom: float = camera.zoom.x
-	var new_zoom: float = clampf(old_zoom * factor, 0.12, 6.0)
+	var new_zoom: float = clampf(old_zoom * factor, _fit_zoom, 6.0)
 	if new_zoom == old_zoom:
 		return
-	# Zoom toward cursor — keep the world point under the mouse fixed
 	var viewport_half := get_viewport().get_visible_rect().size * 0.5
 	var cursor_offset: Vector2 = screen_pos - viewport_half
 	camera.position += cursor_offset / old_zoom - cursor_offset / new_zoom
 	camera.zoom = Vector2(new_zoom, new_zoom)
+	_clamp_camera()
 
 
 func _reset_camera() -> void:
-	# Center grid in the area between UI panels (120px left, 200px right)
 	var vp := get_viewport().get_visible_rect().size
 	var panel_left: float = 120.0
 	var panel_right: float = 200.0
 	var available_w: float = vp.x - panel_left - panel_right
-	var available_h: float = vp.y - 32.0  # top bar
-	# Zoom to fit grid in available area
+	var available_h: float = vp.y - 32.0
 	var zoom_x: float = available_w / float(grid.total_w)
 	var zoom_y: float = available_h / float(grid.total_h)
 	var fit_zoom: float = minf(zoom_x, zoom_y) * 0.95
 	fit_zoom = clampf(fit_zoom, 0.3, 4.0)
-	# Center: offset camera so grid appears centered between panels
+	_fit_zoom = fit_zoom
 	var center_screen_x: float = panel_left + available_w * 0.5
 	var center_screen_y: float = 32.0 + available_h * 0.5
 	var world_center := Vector2(
 		grid.position.x + grid.total_w * 0.5,
 		grid.position.y + grid.total_h * 0.5
 	)
-	# Offset = difference between viewport center and desired screen center, in world coords
 	var vp_center := vp * 0.5
 	var screen_offset := Vector2(center_screen_x - vp_center.x, center_screen_y - vp_center.y)
 	camera.position = world_center + screen_offset / fit_zoom
 	camera.zoom = Vector2(fit_zoom, fit_zoom)
+	_update_camera_limits()
+
+
+## Set Camera2D hard limits so the viewport never shows beyond the grid edges.
+func _update_camera_limits() -> void:
+	camera.limit_left   = int(grid.position.x)
+	camera.limit_top    = int(grid.position.y)
+	camera.limit_right  = int(grid.position.x + grid.total_w)
+	camera.limit_bottom = int(grid.position.y + grid.total_h)
+
+
+func _on_quad_mode_requested() -> void:
+	if _in_quad_mode:
+		_exit_quad_mode()
+	else:
+		_enter_quad_mode()
+
+
+func _enter_quad_mode() -> void:
+	_in_quad_mode = true
+	# Hide main systems
+	grid.visible = false
+	grid.set_process(false)
+	grid.set_process_input(false)
+	ui.visible = false
+	# Set camera to show all 4 panels
+	var vp := get_viewport().get_visible_rect().size
+	camera.position = Vector2(vp.x * 0.5, vp.y * 0.5)
+	camera.zoom = Vector2.ONE
+	camera.limit_left = -9999; camera.limit_right = 99999
+	camera.limit_top  = -9999; camera.limit_bottom = 99999
+	# Create quad systems
+	quad_mode = QuadGridMode.new()
+	add_child(quad_mode)
+	quad_mode.setup(vp)
+	# Wire tool manager to active panel
+	var ag := quad_mode.get_active_grid()
+	var acm := quad_mode.get_active_cluster_mgr()
+	tool_mgr.switch_target(ag, acm, fitness_mgr, quad_mode.get_active_audio())
+	quad_mode.panel_changed.connect(func(_idx: int):
+		var g2 := quad_mode.get_active_grid()
+		var cm2 := quad_mode.get_active_cluster_mgr()
+		tool_mgr.switch_target(g2, cm2, fitness_mgr, quad_mode.get_active_audio())
+	)
+	# Create quad UI
+	quad_ui = QuadGridUI.new()
+	add_child(quad_ui)
+	quad_ui.setup(quad_mode)
+	quad_ui.back_requested.connect(_exit_quad_mode)
+
+
+func _exit_quad_mode() -> void:
+	_in_quad_mode = false
+	# Destroy quad systems
+	if quad_ui:
+		quad_ui.queue_free(); quad_ui = null
+	if quad_mode:
+		quad_mode.queue_free(); quad_mode = null
+	# Restore main systems
+	grid.visible = true
+	grid.set_process(true)
+	grid.set_process_input(true)
+	ui.visible = true
+	# Reconnect tool manager to main grid
+	tool_mgr.switch_target(grid, cluster_mgr, fitness_mgr, audio)
+	# Restore camera
+	_start_game()
+
+
+## Clamp camera position after manual pan so it stays within limits.
+func _clamp_camera() -> void:
+	var vp := get_viewport().get_visible_rect().size
+	var half_w: float = vp.x * 0.5 / camera.zoom.x
+	var half_h: float = vp.y * 0.5 / camera.zoom.y
+	var min_x: float = float(camera.limit_left)  + half_w
+	var max_x: float = float(camera.limit_right) - half_w
+	var min_y: float = float(camera.limit_top)   + half_h
+	var max_y: float = float(camera.limit_bottom) - half_h
+	camera.position.x = clampf(camera.position.x, minf(min_x, max_x), maxf(min_x, max_x))
+	camera.position.y = clampf(camera.position.y, minf(min_y, max_y), maxf(min_y, max_y))

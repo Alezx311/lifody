@@ -41,7 +41,7 @@ var _anim_time: float = 0.0      # wall-clock seconds; drives smooth animations
 var tonal: TonalRegions = null
 
 ## Listening zone radius in grid cells (0 = play everything).
-var listening_radius: int = 20
+var listening_radius: int = 0
 
 # ── Snapshot ring buffer for Rewind tool ────────────────────────────────────
 const SNAPSHOT_INTERVAL: int = 5    # ticks between snapshots

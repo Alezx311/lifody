@@ -13,6 +13,7 @@ signal mute_cluster(cluster_id: int)
 signal save_melody_requested(cluster_id: int)
 signal event_requested(event_name: String, cluster_id: int)
 signal grid_resize_requested(w: int, h: int, cs: int)
+signal quad_mode_requested
 
 # References set via setup()
 var grid: LifeGrid = null
@@ -38,6 +39,7 @@ var _show_library_btn: Button = null
 var _settings_panel: Panel = null
 var _sound_panel: Panel = null
 var _instrument_btns: Array = []
+var _inst_option: OptionButton = null
 
 # Panel references for responsive resizing
 var _top_bar: Panel = null
@@ -249,6 +251,28 @@ func _build_top_bar() -> void:
 	)
 	hbox2.add_child(col_note_btn)
 
+	# ── Instrument selector ────────────────────────────────────────────────────
+	var inst_sep := VSeparator.new()
+	inst_sep.custom_minimum_size = Vector2(4, 0)
+	hbox2.add_child(inst_sep)
+
+	hbox2.add_child(_label("🎵", 12))
+	_inst_option = OptionButton.new()
+	_inst_option.custom_minimum_size = Vector2(110, 0)
+	_inst_option.tooltip_text = "Select instrument"
+	var _inst_labels: Array = ["🎸 Guitar", "🎹 Piano", "🎸 Organ", "🎻 Strings",
+							   "🎸 Acoustic", "🎷 Wind", "🎸 Bass", "🎻 Pad"]
+	for lbl in _inst_labels:
+		_inst_option.add_item(lbl as String)
+	if audio_engine:
+		_inst_option.selected = audio_engine.current_instrument
+	_inst_option.item_selected.connect(func(idx: int) -> void:
+		if audio_engine:
+			audio_engine.set_instrument(idx)
+		_highlight_instrument(idx)
+	)
+	hbox2.add_child(_inst_option)
+
 	# ── Settings button ────────────────────────────────────────────────────────
 	var cfg_btn := _button("⚙", 12)
 	cfg_btn.tooltip_text = "Settings: grid size, life rules, audio"
@@ -284,6 +308,13 @@ func _build_top_bar() -> void:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 	)
 	hbox2.add_child(fs_btn)
+
+	# ── Quad Grid Mode button ──────────────────────────────────────────────────
+	var quad_btn := _button("⊞ Quad", 11)
+	quad_btn.tooltip_text = "Switch to 4-panel grid mode"
+	quad_btn.custom_minimum_size = Vector2(60, 0)
+	quad_btn.pressed.connect(func() -> void: quad_mode_requested.emit())
+	hbox2.add_child(quad_btn)
 
 	# Token display
 	_token_label = _label("🎭 ×1", 12)
@@ -773,8 +804,8 @@ func _build_sound_panel() -> void:
 	vbox.add_child(inst_grid)
 
 	_instrument_btns = []
-	var inst_names: Array = ["Synth", "Piano", "Organ", "Strings", "Bell", "Flute", "Bass", "Pad"]
-	var inst_icons: Array = ["〰", "🎹", "🎸", "🎻", "🔔", "🪈", "🎸", "🌊"]
+	var inst_names: Array = ["Guitar", "Piano", "Organ", "Strings", "Acoustic", "Wind", "Bass", "Pad"]
+	var inst_icons: Array = ["🎸", "🎹", "🎸", "🎻", "🎸", "🎷", "🎸", "🎻"]
 	for i in inst_names.size():
 		var btn := _button("%s\n%s" % [inst_icons[i], inst_names[i]], 9)
 		btn.custom_minimum_size = Vector2(100, 36)
@@ -858,6 +889,8 @@ func _highlight_instrument(idx: int) -> void:
 	for i in _instrument_btns.size():
 		(_instrument_btns[i] as Button).modulate = \
 			Color(0.4, 0.8, 1.0) if i == idx else Color.WHITE
+	if is_instance_valid(_inst_option) and _inst_option.selected != idx:
+		_inst_option.selected = idx
 
 
 func _build_piano_panel() -> void:
@@ -1229,6 +1262,8 @@ var audio_engine: AudioEngine = null
 
 func set_audio_engine(ae: AudioEngine) -> void:
 	audio_engine = ae
+	if is_instance_valid(_inst_option):
+		_inst_option.selected = ae.current_instrument
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -62,6 +62,22 @@ func setup(g: LifeGrid, cm: ClusterManager, fm: FitnessManager, ae: AudioEngine)
 	g.grid_dragged.connect(_on_grid_drag)
 
 
+## Switch the tool manager to target a different grid (used in quad mode).
+func switch_target(g: LifeGrid, cm: ClusterManager, fm: FitnessManager, ae: AudioEngine) -> void:
+	# Disconnect from old grid
+	if grid != null:
+		if grid.grid_clicked.is_connected(_on_grid_click):
+			grid.grid_clicked.disconnect(_on_grid_click)
+		if grid.grid_dragged.is_connected(_on_grid_drag):
+			grid.grid_dragged.disconnect(_on_grid_drag)
+	grid = g
+	cluster_mgr = cm
+	fitness_mgr = fm
+	audio_engine = ae
+	g.grid_clicked.connect(_on_grid_click)
+	g.grid_dragged.connect(_on_grid_drag)
+
+
 func set_tool(t: int) -> void:
 	active_tool = t
 	_splitting = false
