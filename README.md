@@ -438,63 +438,123 @@ survival_chance = base_chance + (fitness_score - 50) × 0.005
 Уся гра реалізована на **чистому GDScript** в Godot 4.6 без зовнішніх залежностей. Зовнішнього сервера немає — усі підсистеми працюють у одному процесі.
 
 ```
-┌──────────────────────────────────────────────────┐
-│                  GODOT 4.6 ENGINE                │
-│                                                  │
-│  main.gd — оркестрація, сигнали, ігровий цикл   │
-│                                                  │
-│  ┌────────────────┐  ┌─────────────────────────┐ │
-│  │  LifeGrid      │  │  ClusterManager         │ │
-│  │  Life rules     │  │  BFS кластеризація      │ │
-│  │  DNA crossover  │  │  ID persistence          │ │
-│  │  Heat zones     │  │  across ticks            │ │
-│  │  Snapshots      │  │                          │ │
-│  └────────────────┘  └─────────────────────────┘ │
-│                                                  │
-│  ┌────────────────┐  ┌─────────────────────────┐ │
-│  │  AudioEngine   │  │  FitnessManager         │ │
-│  │  Sine-wave     │  │  Feedback scoring        │ │
-│  │  synthesis     │  │  Melody library           │ │
-│  │  ADSR envelopes│  │  Levenshtein similarity   │ │
-│  │  8 presets     │  │  Cooldowns                │ │
-│  │  12 voices     │  │                          │ │
-│  └────────────────┘  └─────────────────────────┘ │
-│                                                  │
-│  ┌────────────────┐  ┌─────────────────────────┐ │
-│  │  ToolManager   │  │  TonalRegions           │ │
-│  │  11 tools      │  │  11 scale types          │ │
-│  │  Input routing │  │  6 presets               │ │
-│  │                │  │  2 map modes              │ │
-│  └────────────────┘  └─────────────────────────┘ │
-│                                                  │
-│  ┌────────────────┐  ┌─────────────────────────┐ │
-│  │ CatalystEvents │  │  GameUI                 │ │
-│  │  5 events      │  │  Programmatic HUD        │ │
-│  │  Token economy │  │  2-row top bar (64px)    │ │
-│  └────────────────┘  └─────────────────────────┘ │
-└──────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                    GODOT 4.6 ENGINE                  │
+│                                                      │
+│  IntroMenu  — стартовий екран (Quick Start / Sandbox)│
+│  main.gd    — оркестрація, сигнали, ігровий цикл    │
+│                                                      │
+│  ┌─────────────────┐  ┌──────────────────────────┐  │
+│  │  LifeGrid       │  │  ClusterManager          │  │
+│  │  Life rules     │  │  BFS кластеризація       │  │
+│  │  DNA crossover  │  │  ID persistence          │  │
+│  │  Heat zones     │  │  across ticks            │  │
+│  │  Snapshots      │  │                          │  │
+│  └─────────────────┘  └──────────────────────────┘  │
+│                                                      │
+│  ┌─────────────────┐  ┌──────────────────────────┐  │
+│  │  AudioEngine    │  │  FitnessManager          │  │
+│  │  Additive synth │  │  Feedback scoring        │  │
+│  │  ADSR envelopes │  │  Melody library          │  │
+│  │  8 instruments  │  │  Levenshtein similarity  │  │
+│  │  12 voices      │  │  Cooldowns               │  │
+│  └─────────────────┘  └──────────────────────────┘  │
+│                                                      │
+│  ┌─────────────────┐  ┌──────────────────────────┐  │
+│  │  ToolManager    │  │  TonalRegions            │  │
+│  │  11 tools       │  │  11 scale types          │  │
+│  │  Input routing  │  │  6 presets, 2 map modes  │  │
+│  └─────────────────┘  └──────────────────────────┘  │
+│                                                      │
+│  ┌─────────────────┐  ┌──────────────────────────┐  │
+│  │ CatalystEvents  │  │  EvolutionTracker        │  │
+│  │  5 events       │  │  Ring buffers (200 тіків)│  │
+│  │  Token economy  │  │  Milestones              │  │
+│  └─────────────────┘  └──────────────────────────┘  │
+│                                                      │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │  GameUI  (CanvasLayer, повністю програмний)     │ │
+│  │  44px top bar  │  260px ліва панель (3 таби)   │ │
+│  │  260px права панель (Evolution)  │  Piano viz  │ │
+│  └─────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Реалізований стек
+### 7.2 Компонування HUD
+
+```
+┌──────────────────────────────────────────────────────┐  ← 44px top bar
+│ 🧬 Lifody  Tick:0  ⚡──●──  ▶Play  Random  🗑  ⚙ ⛶ ⊞│
+├──────────┬──────────────────────────────┬────────────┤
+│ 🔧 Tools │                              │ 🧬 EVOLUTION│
+│ 🌍 World │     GRID  (vp.x − 520 px)   │ sparklines  │
+│ 🎵 Sound │                              │ cluster     │
+│  (260px) │                              │  cards      │
+│          │                              │  (260px)    │
+├──────────┴──────────────────────────────┴────────────┤
+│          │    STATUS BAR  (vp.x − 520px)│            │
+│          ├─────────────────────────────┤            │
+│          │    PIANO VISUALISER  (74px) │            │
+└──────────┴─────────────────────────────┴────────────┘
+```
+
+**Ліва панель — TabContainer (260px):**
+- **🔧 Tools** — 11 інструментів, Draw-клавіатура (12 нот), слайдер Listen Zone, Paint Zone (8 кольорів), 5 подій-каталізаторів
+- **🌍 World** — режим карти (Standard/Islands), 6 пресетів, колір клітин (Age/Note), кнопки Seed
+- **🎵 Sound** — 8 інструментів, 8 жанрових пресетів, слайдери Volume/Timbre/Mutation
+
+**Права панель — Cluster Evolution (260px):**
+- Sparklines: кількість клітин і середній фітнес за останні 50 тіків
+- Остання подія-мілстоун (час + назва)
+- Кнопки "⚙ Правила" (collapsible) та "📚 Library"
+- **До 6 карток кластерів** (топ за розміром), кожна містить:
+  - Заголовок: `#ID · стан · регіон  t:вік` (колір залежить від стану)
+  - Рядок розміру та шкала фітнесу: `sz:N  [████░░░░] 78.0`
+  - Кольорові блоки нот (колір = HSV по pitch, ширина = duration, жовта рамка = поточна нота)
+  - Кнопки дій: `● ♥ 🔇 💾 ❄ 🎭`
+
+### 7.3 Стартовий екран (IntroMenu)
+
+Перед початком гри відображається модальний стартовий екран з навігацією по розділах:
+
+| Розділ | Зміст |
+|--------|-------|
+| **Головне меню** | Quick Start, Sandbox, Налаштування, Вийти |
+| **Sandbox** | Жанровий пресет (Classical/Ambient/Rock/Jazz/Bells/Chaos), стартовий патерн, лад, інструмент, темп/швидкість, мутація |
+| **Налаштування → Аудіо** | Гучність, тембр, BPM, кількість голосів |
+| **Налаштування → Відео** | Розмір сітки, розмір клітин, кольоровий режим, fullscreen |
+| **Налаштування → Гарячі клавіші** | Довідка по всіх клавішах |
+
+### 7.4 EvolutionTracker
+
+Новий модуль `scripts/evolution_tracker.gd` зберігає метрики еволюції для відображення sparklines:
+
+- **Ring buffer 200 записів**: кількість живих клітин + середній фітнес (зберігається як `int × 10` для точності без float)
+- **Мілстоуни** (до 20): автоматично — поява першого кластера; вручну — будь-яка подія-каталізатор через `record_event(tick, label)`
+- Підписується на сигнали `tick_completed` і `clusters_updated`
+
+### 7.5 Реалізований стек
 
 | Компонент | Технологія |
 |---|---|
-| Симуляція Life | GDScript (life_grid.gd) |
-| Кластеризація | BFS (cluster_manager.gd), не Union-Find |
-| Аудіо движок | Чистий GDScript: AudioStreamGenerator, sine-wave additive synthesis |
-| Схожість мелодій | Levenshtein distance (fitness_manager.gd) |
+| Симуляція Life | GDScript (`life_grid.gd`) |
+| Кластеризація | BFS (`cluster_manager.gd`), не Union-Find |
+| Аудіо | Чистий GDScript: `AudioStreamGenerator`, адитивний синтез sine-wave |
+| Схожість мелодій | Levenshtein distance (`fitness_manager.gd`) |
 | Збереження стану | JSON snapshots кожні 5 тіків (ring buffer 10) |
-| UI | Програмний GDScript (game_ui.gd), без .tscn |
+| Метрики еволюції | Ring buffer 200 тіків (`evolution_tracker.gd`) |
+| UI | Програмний GDScript (`game_ui.gd`, `intro_menu.gd`), без .tscn |
 | Рендеринг | OpenGL Compatibility (D3D12 на Windows) |
 
-### 7.3 Сигнальна архітектура
+### 7.6 Сигнальна архітектура
 
 Компоненти з'єднані через **Godot signals** у `main.gd`:
-- `tick_completed` → ClusterManager → FitnessManager → CatalystEvents → GameUI
-- `cell_liked` / `cell_muted` → FitnessManager
+- `tick_completed` → ClusterManager → FitnessManager → CatalystEvents → GameUI + EvolutionTracker
+- `clusters_updated` → AudioEngine + GameUI + EvolutionTracker
 - `tool_changed` → GameUI (підсвітка кнопки)
-- `event_requested` → CatalystEvents
+- `event_requested` → CatalystEvents → EvolutionTracker (`record_event`)
 - `seed_requested` / `clear_requested` → LifeGrid
+- `grid_resize_requested` → LifeGrid + TonalRegions + Camera
 
 ---
 
@@ -502,10 +562,65 @@ survival_chance = base_chance + (fitness_score - 50) × 0.005
 
 ---
 
-## Історія змін
+## Патч-ноути
 
-- **2026-03-23:** Масове оновлення документа відповідно до реального стану коду:
-  - **Секція 3:** Додано інструменти DRAW (малювання клітин, клавіша 9) та PAINT_REGION (малювання тональних зон у режимі Island)
-  - **Секція 4:** Повністю переписано — додано 2 режими карти (Standard/Island), 6 пресетів, 11 типів ладів
-  - **Секція 2.1:** Додано тиєрну систему бонусу за бібліотеку (+10 при >70%, +5 при 50–70%)
-  - **Секція 7:** Повністю переписано — замінено неіснуючу архітектуру TypeScript/WebSocket на фактичну чисту GDScript-архітектуру з описом сигнальної системи
+### v0.3 — 2026-03-26 · UI Redesign: Dual Panel Layout
+
+#### Інтерфейс
+
+**Нова схема панелей:**
+- Top bar скорочено з **64px (2 рядки) → 44px (1 рядок)**. Видалено Camera hint, кнопки Map mode та пресетів перенесено до лівої панелі.
+- **Ліва панель** (260px) замінює колишній вузький Tool Panel (120px). TabContainer з 3 табами:
+  - **🔧 Tools** — всі 11 інструментів + повна клавіатура pitch + Listen Zone + Paint Zone + Events
+  - **🌍 World** — режими карти, 6 пресетів, кольоровий режим, Seed-кнопки
+  - **🎵 Sound** — 8 інструментів, 8 жанрових пресетів, гучність/тембр/мутація
+- **Права панель** (260px) замінює Info Panel і повністю присвячена **еволюції кластерів**:
+  - Два sparklines (клітини + середній фітнес) за останні 50 тіків
+  - Рядок останньої події-мілстоуну
+  - Collapsible секція правил Life та фітнесу
+  - Живий список до 6 карток кластерів (топ за розміром), що оновлюється щотіку
+
+**Картки кластерів (нові):**
+- Заголовок в кольорі стану: зелений = *evolving*, синій = *stable*, бурштиновий = *oscillating*, пурпурний = *glider*
+- Шкала фітнесу у вигляді ASCII-бару `[████░░░░]`
+- Ряд кольорових нотних блоків: колір фону = `HSV(pitch/12, 0.65, 0.80)`, ширина = `10 + duration×5` px, жовта рамка на поточно відтворюваній ноті (`melody_index`)
+- Кнопки: **●** вибір, **♥** лайк (+15), **🔇** mute (−20), **💾** зберегти, **❄** заморозити, **🎭** дзеркало
+
+**Grid offsets:**
+- `grid.position = Vector2(260, 44)` — зсунутий з урахуванням лівої панелі
+- Камера: `panel_left = 260`, `panel_right = 260`, центрується у просторі між панелями
+
+#### Нові системи
+
+**IntroMenu** (`scripts/intro_menu.gd`):
+- Стартовий екран до запуску гри зі stack-based навігацією
+- **Quick Start** — миттєвий старт з дефолтними налаштуваннями
+- **Sandbox** — жанровий пресет (Classical/Ambient/Rock/Jazz/Bells/Chaos), стартовий патерн, лад, інструмент, темп, рівень мутації
+- **Налаштування** з 3 табами: Аудіо, Відео (розмір сітки, fullscreen), Гарячі клавіші
+
+**EvolutionTracker** (`scripts/evolution_tracker.gd`):
+- Ring buffer на 200 записів: кількість клітин + avg fitness (з точністю ×10)
+- До 20 мілстоунів: «Перший кластер», назви catalyst-подій
+- Метод `record_event(tick, label)` — викликається з `main.gd` при кожній події-каталізаторі
+
+#### Виправлення
+
+- Виправлено синтаксичну помилку GDScript у `_rebuild_piano_keys()`: кілька `match`-гілок на одному рядку через `;` — некоректний синтаксис Godot 4; розбито на окремі рядки
+
+---
+
+### v0.2 — 2026-03-23 · Audio & Tonal Regions
+
+- Додано 8 семплових інструментів (Guitar, Piano, Organ, Strings, Acoustic, Wind, Bass, Pad)
+- Додано 6 пресетів тональних регіонів та режим карти Islands
+- Повністю переписано аудіо-движок: ADSR envelopes, polyphony до 12 голосів, синхронізація темпу з tick interval
+- Додано 11 типів ладів (Major, Minor, Dorian, Phrygian, Lydian, Mixolydian, Locrian, Harmonic Minor, Pentatonic Maj/Min, Blues)
+- Покращено UI: 2-рядковий top bar, жанрові пресети у Sound Panel, Genre-кнопки (8 жанрів)
+
+---
+
+### v0.1 — перший реліз
+
+- Conway's Game of Life + мелодичне ДНК (crossover, мутація)
+- BFS-кластеризація, fitness scoring, melody library
+- 5 catalyst events, 11 інструментів, базовий HUD

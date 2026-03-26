@@ -102,11 +102,20 @@ Pure GDScript additive synthesis. 44,100 Hz, 80 ms buffer, max 12 simultaneous v
 ☄️ Meteor, 🤝 Resonance, ❄️ Freeze, 🌊 Mutation Wave, 🎭 Mirror
 
 ### UI Layout (GameUI)
-The HUD is built entirely in GDScript. Top bar is **64px tall, split into 2 rows**:
-- **Row 1:** Title, tick counter, speed slider, pause, seed buttons (Random/Glider/R-Pentomino), clear, camera hint
-- **Row 2:** Map mode (Standard/Islands), map presets (12Maj, 12Min, 5ths, 7Modes, Dorian, Classic), cell color mode (Age/Note), settings ⚙, sound toggle 🎵, fullscreen ⛶, token display
+The HUD is built entirely in GDScript. **Single-row top bar (44px):** title, tick counter, speed slider, pause button, Random/Clear, settings ⚙, fullscreen ⛶, quad-mode ⊞, token display.
 
-Side panels: ToolPanel (left, 120px), InfoPanel (right, 200px), StatusBar (bottom), LibraryPanel (overlay), SettingsPanel (overlay).
+**Left panel (260px) — TabContainer:**
+- Tab 🔧 Tools: 11 tools, draw-pitch keyboard (12 notes), listen zone slider, paint zone selector, 5 catalyst event buttons
+- Tab 🌍 World: map mode (Standard/Islands), 6 presets, cell color mode, seed buttons
+- Tab 🎵 Sound: 8 instruments, 8 genre presets, volume/timbre/mutation sliders
+
+**Right panel (260px) — Cluster Evolution Panel:**
+- Sparklines: cell count + avg fitness (last 50 ticks, sourced from EvolutionTracker)
+- Latest milestone label
+- Collapsible rules/fitness info, Library button
+- Live cluster cards (top 6 by size): colored header, fitness bar, note blocks (HSV by pitch, width by duration, yellow border on active note), action buttons (● ♥ 🔇 💾 ❄ 🎭)
+
+**Bottom:** StatusBar (vp.x − 520px wide) + Piano visualiser (74px tall). LibraryPanel and SettingsPanel are floating overlays.
 
 ### Fitness Scoring Details
 | Action | Fitness Change |
@@ -127,7 +136,9 @@ Side panels: ToolPanel (left, 120px), InfoPanel (right, 200px), StatusBar (botto
 | `scripts/cluster_manager.gd` | BFS cluster detection, ID persistence across ticks |
 | `scripts/cluster.gd` | Organism data: cells, fitness, melody, playback state |
 | `scripts/audio_engine.gd` | Synthesis scheduler, ADSR, polyphony management, 8 presets |
-| `scripts/game_ui.gd` | Entire HUD (2-row top bar, panels, buttons, cluster list, fitness bars) |
+| `scripts/game_ui.gd` | Entire HUD (44px top bar, left tabs panel, right evolution panel, piano visualiser) |
+| `scripts/intro_menu.gd` | Start screen: Quick Start, Sandbox config, Settings (audio/video/hotkeys) |
+| `scripts/evolution_tracker.gd` | Ring buffer (200 ticks) for cell counts, avg fitness, named milestones |
 | `scripts/fitness_manager.gd` | Feedback scoring, melody library, similarity (Levenshtein), cooldowns |
 | `scripts/tool_manager.gd` | Tool state, grid event routing (11 tools) |
 | `scripts/catalyst_events.gd` | Token economy, 5 special event implementations |
@@ -149,11 +160,5 @@ Side panels: ToolPanel (left, 120px), InfoPanel (right, 200px), StatusBar (botto
 
 ## Change History
 
-- **2026-03-23:** Updated CLAUDE.md to match actual codebase:
-  - Added tonal region presets (6 presets), map modes (Standard/Island), 11 scale types
-  - Added missing tools: DRAW (key 9) and PAINT_REGION
-  - Documented 2-row top bar layout (64px)
-  - Added audio engine instrument presets (8 types)
-  - Added default grid size (80×60, 12px cells)
-  - Added detailed fitness scoring table with library similarity tiers
-  - Updated system wiring diagram to reflect actual capabilities
+- **2026-03-26:** UI redesign — dual 260px panel layout, IntroMenu, EvolutionTracker; updated CLAUDE.md to match
+- **2026-03-23:** Updated CLAUDE.md: tonal presets, map modes, scale types, DRAW/PAINT_REGION tools, 2-row top bar, audio presets, fitness scoring table
