@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3 uid="uid://lifody_main_scene"]
+[gd_scene format=3 uid="uid://c4djc6y11xf2b"]
 
-[ext_resource type="Script" path="res://main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://yvmrjii7xv67" path="res://main.gd" id="1_main"]
 
-[node name="Main" type="Node2D"]
+[node name="Main" type="Node2D" unique_id=723733349]
 script = ExtResource("1_main")

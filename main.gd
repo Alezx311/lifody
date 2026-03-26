@@ -11,6 +11,7 @@ var fitness_mgr: FitnessManager
 var tool_mgr: ToolManager
 var catalyst: CatalystEvents
 var ui: GameUI
+var evolution_tracker: EvolutionTracker = null
 var camera: Camera2D
 
 var quad_mode: QuadGridMode = null
@@ -24,7 +25,7 @@ var _fit_zoom: float = 1.0
 func _ready() -> void:
 	_create_systems()
 	_wire_signals()
-	_start_game()
+	_show_intro_menu()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -37,9 +38,9 @@ func _create_systems() -> void:
 	tonal.setup(LifeGrid.GRID_W, LifeGrid.GRID_H)
 	add_child(tonal)
 
-	# 2. Life grid (positioned to leave room for tool panel on the left)
+	# 2. Life grid (left panel 260px + top bar 44px)
 	grid = LifeGrid.new()
-	grid.position = Vector2(122, 34)   # offset for UI panels
+	grid.position = Vector2(260, 44)
 	grid.setup_tonal(tonal)
 	add_child(grid)
 
@@ -73,9 +74,14 @@ func _create_systems() -> void:
 	catalyst.setup(grid, cluster_mgr, fitness_mgr)
 	add_child(catalyst)
 
+	# 7.5. Evolution tracker
+	evolution_tracker = EvolutionTracker.new()
+	evolution_tracker.setup(grid, cluster_mgr)
+	add_child(evolution_tracker)
+
 	# 8. Game UI (CanvasLayer — renders on top)
 	ui = GameUI.new()
-	ui.setup(grid, cluster_mgr, fitness_mgr, tool_mgr, catalyst, tonal)
+	ui.setup(grid, cluster_mgr, fitness_mgr, tool_mgr, catalyst, tonal, evolution_tracker)
 	ui.set_audio_engine(audio)
 	add_child(ui)
 
@@ -111,14 +117,73 @@ func _wire_signals() -> void:
 #  Game loop
 # ────────────────────────────────────────────────────────────────────────────
 
-func _start_game() -> void:
+func _show_intro_menu() -> void:
+	var menu := IntroMenu.new()
+	add_child(menu)
+	menu.start_requested.connect(func(cfg: Dictionary) -> void:
+		_start_game(cfg)
+	)
+
+
+func _start_game(config: Dictionary = {}) -> void:
 	grid.resize_grid(30, 20, 28)
 	tonal.setup(30, 20)
 	_reset_camera()
-	# Start empty in draw mode — let the player paint or pick from library
 	grid.running = false
-	audio.set_tempo(120.0)
+
+	# Instrument
+	var inst: int = config.get("instrument", 0)
+	audio.set_instrument(inst)
+	if ui._inst_option:
+		ui._inst_option.selected = inst
+
+	# Tempo + speed
+	var tps: float = config.get("speed_tps", 5.0)
+	var tempo: float = config.get("tempo", 120.0)
+	audio.set_tempo(tempo)
+	grid.tick_interval = 1.0 / tps
+	ui.set_speed_slider(tps)
+
+	# Mutation rate
+	grid.base_mutation_rate = config.get("mutation_rate", 0.05)
+
+	# Life rules (use defaults unless provided)
+	var birth: Array = config.get("birth_rule", [3])
+	var surv: Array   = config.get("survival_rule", [2, 3])
+	grid.birth_rule    = birth.duplicate()
+	grid.survival_rule = surv.duplicate()
+
+	# Tonal preset
+	var preset_methods := {
+		"classic": "apply_preset_classic",
+		"12maj":   "apply_preset_all_major",
+		"12min":   "apply_preset_all_minor",
+		"5ths":    "apply_preset_circle_of_5ths",
+		"7modes":  "apply_preset_7modes_c",
+		"dorian":  "apply_preset_all_dorian",
+	}
+	var method: String = preset_methods.get(config.get("scale_preset", "classic"), "apply_preset_classic")
+	tonal.map_mode = TonalRegions.MAP_STANDARD
+	tonal.call(method)
+
+	# Starting pattern
+	var pattern: String = config.get("pattern", "empty")
+	_on_seed(pattern)
+
+	# Master volume
+	audio.master_volume = config.get("master_volume", 0.7)
+
+	# Cell color mode
+	var color_mode: String = config.get("color_mode", "age")
+	grid.color_by_note = (color_mode == "note")
+
+	# Fullscreen (may have been toggled live in menu already)
+	if config.get("fullscreen", false):
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+	grid.queue_redraw()
 	tool_mgr.set_tool(ToolManager.Tool.DRAW)
+	ui.sync_pause_button()
 
 
 func _on_tick(tick_num: int) -> void:
@@ -142,6 +207,8 @@ func _on_seed(pattern: String) -> void:
 			grid.seed_glider(cx, cy)
 		"r_pentomino":
 			grid.seed_r_pentomino(LifeGrid.GRID_W / 2, LifeGrid.GRID_H / 2)
+		"empty":
+			pass  # start with blank grid
 		_:
 			grid.seed_random(0.28)
 
@@ -159,8 +226,15 @@ func _on_speed_changed(tps: float) -> void:
 	audio.set_tempo(60.0 * tps * 0.5)
 
 
+func _set_speed(tps: float) -> void:
+	grid.tick_interval = 1.0 / tps
+	audio.set_tempo(60.0 * tps * 0.5)
+	ui.set_speed_slider(tps)
+
+
 func _on_pause_toggled() -> void:
 	grid.running = not grid.running
+	ui.sync_pause_button()
 
 
 func _on_event(event_name: String, cluster_id: int) -> void:
@@ -176,6 +250,15 @@ func _on_event(event_name: String, cluster_id: int) -> void:
 			catalyst.event_mutation_wave()
 		"event_mirror":
 			catalyst.event_mirror(cluster_id)
+	if evolution_tracker:
+		var label_map := {
+			"event_meteorite": "☄️ Метеорит",
+			"event_resonance": "🤝 Резонанс",
+			"event_freeze": "❄️ Заморозка",
+			"event_mutation_wave": "🌊 Хвиля мутацій",
+			"event_mirror": "🎭 Дзеркало",
+		}
+		evolution_tracker.record_event(grid.tick, label_map.get(event_name, event_name))
 
 
 func _cluster_center_or_grid_center(cluster_id: int) -> Vector2i:
@@ -228,7 +311,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 	# ── Keyboard shortcuts ───────────────────────────────────────────────────
-	elif event is InputEventKey and (event as InputEventKey).pressed:
+	elif event is InputEventKey and (event as InputEventKey).pressed and not (event as InputEventKey).echo:
 		var key := (event as InputEventKey).keycode
 		match key:
 			KEY_SPACE:
@@ -239,26 +322,16 @@ func _unhandled_input(event: InputEvent) -> void:
 				_on_clear()
 			KEY_F, KEY_HOME:          # Reset camera
 				_reset_camera()
-			KEY_1:
-				tool_mgr.set_tool(ToolManager.Tool.SELECT)
-			KEY_2:
-				tool_mgr.set_tool(ToolManager.Tool.HEAT_HOT)
-			KEY_3:
-				tool_mgr.set_tool(ToolManager.Tool.HEAT_COLD)
-			KEY_4:
-				tool_mgr.set_tool(ToolManager.Tool.BEACON_ATTRACT)
-			KEY_5:
-				tool_mgr.set_tool(ToolManager.Tool.BEACON_REPEL)
-			KEY_6:
-				tool_mgr.set_tool(ToolManager.Tool.DNA_INJECT)
-			KEY_7:
-				tool_mgr.set_tool(ToolManager.Tool.REWIND)
-			KEY_8:
-				tool_mgr.set_tool(ToolManager.Tool.SPLIT)
-			KEY_9:
-				tool_mgr.set_tool(ToolManager.Tool.DRAW)
-			KEY_0:
-				tool_mgr.set_tool(ToolManager.Tool.ERASE)
+			# Keys 1-9 control simulation speed
+			KEY_1: _set_speed(1.0)
+			KEY_2: _set_speed(2.0)
+			KEY_3: _set_speed(3.0)
+			KEY_4: _set_speed(5.0)
+			KEY_5: _set_speed(8.0)
+			KEY_6: _set_speed(10.0)
+			KEY_7: _set_speed(13.0)
+			KEY_8: _set_speed(16.0)
+			KEY_9: _set_speed(20.0)
 			KEY_EQUAL, KEY_KP_ADD:
 				grid.tick_interval = maxf(grid.tick_interval * 0.8, 0.05)
 			KEY_MINUS, KEY_KP_SUBTRACT:
@@ -304,17 +377,17 @@ func _zoom_camera(factor: float, screen_pos: Vector2) -> void:
 
 func _reset_camera() -> void:
 	var vp := get_viewport().get_visible_rect().size
-	var panel_left: float = 120.0
-	var panel_right: float = 200.0
+	var panel_left: float = 260.0
+	var panel_right: float = 260.0
 	var available_w: float = vp.x - panel_left - panel_right
-	var available_h: float = vp.y - 32.0
+	var available_h: float = vp.y - 44.0
 	var zoom_x: float = available_w / float(grid.total_w)
 	var zoom_y: float = available_h / float(grid.total_h)
 	var fit_zoom: float = minf(zoom_x, zoom_y) * 0.95
 	fit_zoom = clampf(fit_zoom, 0.3, 4.0)
 	_fit_zoom = fit_zoom
 	var center_screen_x: float = panel_left + available_w * 0.5
-	var center_screen_y: float = 32.0 + available_h * 0.5
+	var center_screen_y: float = 44.0 + available_h * 0.5
 	var world_center := Vector2(
 		grid.position.x + grid.total_w * 0.5,
 		grid.position.y + grid.total_h * 0.5
