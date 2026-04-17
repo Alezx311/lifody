@@ -23,6 +23,9 @@ const NOTE_MAP: Dictionary = {
 	"Fs": 6, "G": 7, "Gs": 8, "A": 9, "As": 10, "B": 11
 }
 
+## Semitone index → note name stem (inverse of NOTE_MAP, sharps only)
+const NOTE_NAMES_SHARP: Array = ["C","Cs","D","Ds","E","F","Fs","G","Gs","A","As","B"]
+
 ## _banks[inst_idx] = Dictionary{ midi_int: AudioStream }
 var _banks: Array = []
 ## _keys[inst_idx] = sorted Array[int] of available MIDI notes
@@ -37,23 +40,16 @@ func load_all() -> void:
 	for folder in FOLDERS:
 		var bank: Dictionary = {}
 		var dir_path: String = "res://samples/" + folder
-		var dir := DirAccess.open(dir_path)
-		if dir == null:
-			push_warning("SampleBank: folder not found — " + dir_path)
-			_banks.append(bank)
-			_keys.append([])
-			continue
-		dir.list_dir_begin()
-		var fname: String = dir.get_next()
-		while fname != "":
-			if fname.ends_with(".ogg"):
-				var midi: int = _parse_midi(fname.get_basename())
-				if midi >= 0:
-					var stream = ResourceLoader.load(dir_path + "/" + fname)
-					if stream != null:
-						bank[midi] = stream
-			fname = dir.get_next()
-		dir.list_dir_end()
+		# Enumerate known MIDI range instead of using DirAccess, which is
+		# unreliable on the PCK virtual filesystem in exported Godot 4 builds.
+		for midi in range(21, 109):  # A0 (21) – C8 (108), standard piano range
+			var path: String = dir_path + "/" + _midi_to_fname(midi) + ".ogg"
+			if ResourceLoader.exists(path):
+				var stream = ResourceLoader.load(path)
+				if stream != null:
+					bank[midi] = stream
+		if bank.is_empty():
+			push_warning("SampleBank: no samples loaded for " + folder)
 		_banks.append(bank)
 		var keys: Array = bank.keys()
 		keys.sort()
@@ -88,6 +84,14 @@ func get_sample(inst_idx: int, target_midi: int) -> Dictionary:
 			break
 	var pitch_scale: float = pow(2.0, float(target_midi - nearest) / 12.0)
 	return {"stream": bank[nearest], "pitch_scale": pitch_scale}
+
+
+## Convert MIDI number to filename stem, e.g. 69 → "A4".
+## Inverse of _parse_midi(); uses sharp names to match the sample filenames.
+func _midi_to_fname(midi: int) -> String:
+	var semitone: int = (midi - 12) % 12
+	var octave: int   = (midi - 12) / 12
+	return NOTE_NAMES_SHARP[semitone] + str(octave)
 
 
 ## Parse "A4", "As4", "Cs3" → MIDI number. Returns -1 on failure.

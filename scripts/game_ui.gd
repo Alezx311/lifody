@@ -17,6 +17,7 @@ signal save_melody_requested(cluster_id: int)
 signal event_requested(event_name: String, cluster_id: int)
 signal grid_resize_requested(w: int, h: int, cs: int)
 signal quad_mode_requested
+signal chips_mode_requested
 
 var grid: LifeGrid = null
 var cluster_mgr: ClusterManager = null
@@ -47,6 +48,9 @@ var _milestone_lbl: Label = null
 var _evo_rules_body: VBoxContainer = null
 var _evo_rules_collapsed: bool = false
 var _evo_cluster_cards_vbox: VBoxContainer = null  # dynamic cluster cards area
+## Cached per-cluster-id card nodes: cid → {card, hdr, bar, notes_hb, notes: Array[Button], sep}
+## Reused across ticks to avoid queue_free/alloc cycles (prev. ~750 Node frees/sec).
+var _card_nodes: Dictionary = {}
 var _last_sparkline_tick: int = -1
 
 # Panels
@@ -205,6 +209,12 @@ func _build_top_bar() -> void:
 	quad_btn.custom_minimum_size = Vector2(26, 0)
 	quad_btn.pressed.connect(func() -> void: quad_mode_requested.emit())
 	hbox.add_child(quad_btn)
+
+	var chips_btn := _button("🎮", 11)
+	chips_btn.tooltip_text = "Chips From Audio mode"
+	chips_btn.custom_minimum_size = Vector2(26, 0)
+	chips_btn.pressed.connect(func() -> void: chips_mode_requested.emit())
+	hbox.add_child(chips_btn)
 
 	_token_label = _label("🎭×1", 12)
 	_token_label.custom_minimum_size = Vector2(44, 0)
@@ -711,67 +721,182 @@ func _build_cluster_evo_panel() -> void:
 func _refresh_cluster_cards(clusters: Array) -> void:
 	if not is_instance_valid(_evo_cluster_cards_vbox):
 		return
-	for ch in _evo_cluster_cards_vbox.get_children():
-		ch.queue_free()
 
 	if clusters.is_empty():
-		var empty_lbl := _label("Немає кластерів.\nПосій сітку → Play.", 10)
-		empty_lbl.add_theme_color_override("font_color", DIM_COLOR)
-		_evo_cluster_cards_vbox.add_child(empty_lbl)
+		_clear_all_cluster_cards()
+		# Show placeholder (only if not already shown)
+		var has_placeholder: bool = false
+		for ch in _evo_cluster_cards_vbox.get_children():
+			if ch.has_meta("_placeholder"):
+				has_placeholder = true
+				break
+		if not has_placeholder:
+			var empty_lbl := _label("Немає кластерів.\nПосій сітку → Play.", 10)
+			empty_lbl.add_theme_color_override("font_color", DIM_COLOR)
+			empty_lbl.set_meta("_placeholder", true)
+			_evo_cluster_cards_vbox.add_child(empty_lbl)
 		return
+
+	# Remove any placeholder from an earlier empty frame
+	for ch in _evo_cluster_cards_vbox.get_children():
+		if ch.has_meta("_placeholder"):
+			ch.queue_free()
 
 	var sorted: Array = clusters.duplicate()
 	sorted.sort_custom(func(a: Cluster, b: Cluster) -> bool:
 		return a.get_size() > b.get_size()
 	)
 	var limit: int = mini(sorted.size(), 6)
-	for i in range(limit):
-		var cl := sorted[i] as Cluster
-		_evo_cluster_cards_vbox.add_child(_make_cluster_card(cl))
-		if i < limit - 1:
-			var sep := HSeparator.new()
-			sep.add_theme_color_override("color", Color(0.25, 0.25, 0.40))
-			_evo_cluster_cards_vbox.add_child(sep)
+	var top: Array = sorted.slice(0, limit)
+
+	# Build set of current top-N ids
+	var top_ids: Dictionary = {}
+	for cl_raw in top:
+		top_ids[(cl_raw as Cluster).id] = true
+
+	# Evict cached cards for clusters that fell out of the top-N
+	for cid in _card_nodes.keys().duplicate():
+		if not top_ids.has(cid):
+			var entry: Dictionary = _card_nodes[cid]
+			var card_node: Node = entry.get("card")
+			var sep_node: Node = entry.get("sep")
+			if card_node and is_instance_valid(card_node):
+				card_node.queue_free()
+			if sep_node and is_instance_valid(sep_node):
+				sep_node.queue_free()
+			_card_nodes.erase(cid)
+
+	# Create or update each card, then re-order to match ranking
+	for i in top.size():
+		var cl := top[i] as Cluster
+		if not _card_nodes.has(cl.id):
+			_card_nodes[cl.id] = _make_cluster_card(cl)
+			_evo_cluster_cards_vbox.add_child(_card_nodes[cl.id]["card"])
+			if _card_nodes[cl.id].get("sep"):
+				_evo_cluster_cards_vbox.add_child(_card_nodes[cl.id]["sep"])
+		else:
+			_update_cluster_card(cl, _card_nodes[cl.id])
+
+	# Re-order children: card, sep, card, sep, ... in ranking order
+	var child_idx: int = 0
+	for i in top.size():
+		var cl := top[i] as Cluster
+		var entry: Dictionary = _card_nodes[cl.id]
+		_evo_cluster_cards_vbox.move_child(entry["card"], child_idx)
+		child_idx += 1
+		var sep_node: Node = entry.get("sep")
+		if sep_node and is_instance_valid(sep_node):
+			var should_show: bool = (i < top.size() - 1)
+			(sep_node as CanvasItem).visible = should_show
+			if should_show:
+				_evo_cluster_cards_vbox.move_child(sep_node, child_idx)
+				child_idx += 1
 
 
-func _make_cluster_card(cl: Cluster) -> VBoxContainer:
+func _clear_all_cluster_cards() -> void:
+	for cid in _card_nodes.keys().duplicate():
+		var entry: Dictionary = _card_nodes[cid]
+		var card_node: Node = entry.get("card")
+		var sep_node: Node = entry.get("sep")
+		if card_node and is_instance_valid(card_node):
+			card_node.queue_free()
+		if sep_node and is_instance_valid(sep_node):
+			sep_node.queue_free()
+	_card_nodes.clear()
+
+
+func _cluster_state_color(state: String) -> Color:
+	match state:
+		"stable":       return Color(0.5, 0.7, 1.0)
+		"oscillating":  return Color(1.0, 0.8, 0.3)
+		"glider":       return Color(1.0, 0.4, 1.0)
+		_:              return Color(0.6, 0.9, 0.6)  # evolving = green
+
+
+func _cluster_region_name(cl: Cluster) -> String:
+	if cl.cells.is_empty():
+		return "?"
+	var cp := cl.cells[0] as Vector2i
+	return tonal.get_region_name(tonal.get_region_id(cp.x, cp.y))
+
+
+func _cluster_header_text(cl: Cluster, region_name: String) -> String:
+	return "#%d · %s · %s  t:%d" % [cl.id, cl.state, region_name, cl.get_age(grid.tick)]
+
+
+func _cluster_bar_text(cl: Cluster) -> String:
+	var filled: int = clampi(int(cl.fitness_score / 5.0), 0, 20)
+	return "sz:%d  [%s%s] %.0f" % [cl.get_size(), "█".repeat(filled), "░".repeat(20 - filled), cl.fitness_score]
+
+
+func _update_cluster_card(cl: Cluster, entry: Dictionary) -> void:
+	var region_name: String = _cluster_region_name(cl)
+	var hdr: Label = entry.get("hdr")
+	if hdr and is_instance_valid(hdr):
+		hdr.text = _cluster_header_text(cl, region_name)
+		hdr.add_theme_color_override("font_color", _cluster_state_color(cl.state))
+
+	var bar: Label = entry.get("bar")
+	if bar and is_instance_valid(bar):
+		bar.text = _cluster_bar_text(cl)
+
+	# Notes: if length matches, update in place; otherwise rebuild the row
+	var notes_hb: HBoxContainer = entry.get("notes_hb")
+	var cached_notes: Array = entry.get("notes", [])
+	var melody_len: int = cl.melody.size()
+
+	if notes_hb and is_instance_valid(notes_hb):
+		if melody_len == cached_notes.size() and melody_len > 0:
+			for i in melody_len:
+				var note := cl.melody[i] as DNANote
+				_restyle_note_block(cached_notes[i] as Button, note, i == cl.melody_index)
+		else:
+			for n in cached_notes:
+				if is_instance_valid(n):
+					(n as Node).queue_free()
+			cached_notes = []
+			if melody_len > 0:
+				for i in melody_len:
+					var note := cl.melody[i] as DNANote
+					var nb := _make_note_block(note, i == cl.melody_index)
+					notes_hb.add_child(nb)
+					cached_notes.append(nb)
+			entry["notes"] = cached_notes
+
+
+func _make_cluster_card(cl: Cluster) -> Dictionary:
+	var entry: Dictionary = {"card": null, "hdr": null, "bar": null,
+		"notes_hb": null, "notes": [], "sep": null}
+
 	var card := VBoxContainer.new()
 	card.add_theme_constant_override("separation", 3)
+	entry["card"] = card
 
 	# ── Header: #ID · state · region  t:age ───────────────────────────────
-	var region_name: String = "?"
-	if not cl.cells.is_empty():
-		var cp := cl.cells[0] as Vector2i
-		region_name = tonal.get_region_name(tonal.get_region_id(cp.x, cp.y))
-
-	var state_color := Color(0.6, 0.9, 0.6)   # evolving = green
-	match cl.state:
-		"stable":       state_color = Color(0.5, 0.7, 1.0)   # blue
-		"oscillating":  state_color = Color(1.0, 0.8, 0.3)   # amber
-		"glider":       state_color = Color(1.0, 0.4, 1.0)   # magenta
-
-	var hdr_lbl := _label("#%d · %s · %s  t:%d" % [
-		cl.id, cl.state, region_name, cl.get_age(grid.tick)], 9)
-	hdr_lbl.add_theme_color_override("font_color", state_color)
+	var region_name: String = _cluster_region_name(cl)
+	var hdr_lbl := _label(_cluster_header_text(cl, region_name), 9)
+	hdr_lbl.add_theme_color_override("font_color", _cluster_state_color(cl.state))
 	card.add_child(hdr_lbl)
+	entry["hdr"] = hdr_lbl
 
 	# ── Size + fitness bar ─────────────────────────────────────────────────
-	var filled: int = clampi(int(cl.fitness_score / 5.0), 0, 20)
-	var bar_lbl := _label("sz:%d  [%s%s] %.0f" % [
-		cl.get_size(), "█".repeat(filled), "░".repeat(20 - filled), cl.fitness_score], 9)
+	var bar_lbl := _label(_cluster_bar_text(cl), 9)
 	card.add_child(bar_lbl)
+	entry["bar"] = bar_lbl
 
 	# ── Note blocks ────────────────────────────────────────────────────────
+	var notes_hb := HBoxContainer.new()
+	notes_hb.add_theme_constant_override("separation", 2)
+	card.add_child(notes_hb)
+	entry["notes_hb"] = notes_hb
+	var note_refs: Array = []
 	if not cl.melody.is_empty():
-		var notes_hb := HBoxContainer.new()
-		notes_hb.add_theme_constant_override("separation", 2)
 		for i in cl.melody.size():
 			var note := cl.melody[i] as DNANote
 			var nb := _make_note_block(note, i == cl.melody_index)
 			notes_hb.add_child(nb)
-		card.add_child(notes_hb)
-	else:
-		card.add_child(_label("(no melody yet)", 9))
+			note_refs.append(nb)
+	entry["notes"] = note_refs
 
 	# ── Action buttons ─────────────────────────────────────────────────────
 	var actions := HBoxContainer.new()
@@ -831,16 +956,28 @@ func _make_cluster_card(cl: Cluster) -> VBoxContainer:
 	actions.add_child(mirror_btn)
 
 	card.add_child(actions)
-	return card
+
+	# Separator below this card (may be hidden if it's the last in ranking)
+	var sep := HSeparator.new()
+	sep.add_theme_color_override("color", Color(0.25, 0.25, 0.40))
+	entry["sep"] = sep
+
+	return entry
 
 
 func _make_note_block(note: DNANote, is_playing: bool) -> Button:
 	var btn := Button.new()
-	btn.text = NOTE_NAMES[note.pitch]
 	btn.add_theme_font_size_override("font_size", 8)
+	btn.focus_mode = Control.FOCUS_NONE
+	_restyle_note_block(btn, note, is_playing)
+	return btn
+
+
+## In-place update of a pre-existing note button (used by _update_cluster_card).
+func _restyle_note_block(btn: Button, note: DNANote, is_playing: bool) -> void:
+	btn.text = NOTE_NAMES[note.pitch]
 	# Width proportional to duration (1→15px, 8→50px)
 	btn.custom_minimum_size = Vector2(10 + note.duration * 5, 22)
-	btn.focus_mode = Control.FOCUS_NONE
 	btn.tooltip_text = "%s · d:%d · v:%d · %s" % [
 		NOTE_NAMES[note.pitch], note.duration, note.velocity, ARTIC_SHORT[note.articulation]]
 
@@ -860,7 +997,6 @@ func _make_note_block(note: DNANote, is_playing: bool) -> Button:
 	var lum := style.bg_color.r * 0.299 + style.bg_color.g * 0.587 + style.bg_color.b * 0.114
 	btn.add_theme_color_override("font_color",
 		Color(0.05, 0.05, 0.08) if lum > 0.55 else Color(0.95, 0.95, 1.0))
-	return btn
 
 
 # ── Evolution sparkline helpers ───────────────────────────────────────────────

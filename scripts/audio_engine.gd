@@ -26,6 +26,7 @@ const INSTRUMENT_NAMES: Array = [
 var _bank: SampleBank = null
 var _tonal: TonalRegions = null
 var _grid: LifeGrid = null
+var _fitness_mgr: FitnessManager = null
 
 ## Pool of voice slots
 var _pool: Array = []   # Array of { player: AudioStreamPlayer, end_time: float, midi: int }
@@ -81,6 +82,10 @@ func setup_grid(g: LifeGrid) -> void:
 	_grid = g
 
 
+func setup_fitness(fm: FitnessManager) -> void:
+	_fitness_mgr = fm
+
+
 func set_tempo(bpm: float) -> void:
 	_tempo_bps = bpm / 60.0
 
@@ -112,13 +117,15 @@ func play_clusters(clusters: Array) -> void:
 	if _grid != null:
 		listening_radius = _grid.listening_radius
 
-	# Collect live cluster IDs and their distances to the listener
+	# Collect live cluster IDs and their distances to the listener (skip muted)
 	var live_ids: Dictionary = {}
 	for cl_raw in clusters:
 		var cl := cl_raw as Cluster
+		if _fitness_mgr != null and _fitness_mgr.is_muted(cl.id):
+			continue
 		live_ids[cl.id] = _cluster_distance(cl, listen_center)
 
-	# Drop schedulers for dead / out-of-range clusters
+	# Drop schedulers for dead / muted / out-of-range clusters
 	for cid in _schedulers.keys().duplicate():
 		if not live_ids.has(cid):
 			_schedulers.erase(cid)
@@ -131,7 +138,9 @@ func play_clusters(clusters: Array) -> void:
 		var cl := cl_raw as Cluster
 		if cl.melody.is_empty():
 			continue
-		var dist: float = live_ids.get(cl.id, 9999.0)
+		if not live_ids.has(cl.id):
+			continue  # muted cluster was excluded above
+		var dist: float = live_ids[cl.id]
 		if listening_radius > 0 and dist > float(listening_radius):
 			continue
 		in_range.append({"cl": cl, "dist": dist})

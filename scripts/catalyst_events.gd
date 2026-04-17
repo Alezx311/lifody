@@ -16,6 +16,10 @@ var fitness_mgr: FitnessManager = null
 
 var tokens: int = 1   # start with one token
 
+## Scheduled tick-based effects: [{end_tick: int, callback: Callable}]
+## Replaces wall-clock timers so effect duration scales with simulation speed.
+var _scheduled_effects: Array = []
+
 
 func setup(g: LifeGrid, cm: ClusterManager, fm: FitnessManager) -> void:
 	grid = g
@@ -29,6 +33,16 @@ func on_tick(tick_num: int) -> void:
 			tokens += 1
 			event_tokens_changed.emit(tokens)
 			status_message.emit("New event token! (%d/%d)" % [tokens, MAX_TOKENS])
+
+	# Fire due scheduled effects, keep the rest
+	if not _scheduled_effects.is_empty():
+		var remaining: Array = []
+		for eff in _scheduled_effects:
+			if tick_num >= int(eff["end_tick"]):
+				(eff["callback"] as Callable).call()
+			else:
+				remaining.append(eff)
+		_scheduled_effects = remaining
 
 
 func _spend_token() -> bool:
@@ -170,12 +184,14 @@ func event_freeze(cluster_id: int) -> void:
 		event_tokens_changed.emit(tokens)
 		return
 	grid.freeze_cells(cl.cells, true)
-	# Schedule unfreeze after 20 ticks using a one-shot timer
-	var timer := get_tree().create_timer(20.0 * grid.tick_interval)
-	timer.timeout.connect(func() -> void:
-		grid.freeze_cells(cl.cells, false)
-		status_message.emit("❄️ Cluster thawed.")
-	)
+	# Schedule unfreeze after 20 simulation ticks (speed-invariant)
+	var frozen_cells: Array = cl.cells.duplicate()
+	_scheduled_effects.append({
+		"end_tick": grid.tick + 20,
+		"callback": func() -> void:
+			grid.freeze_cells(frozen_cells, false)
+			status_message.emit("❄️ Cluster thawed."),
+	})
 	status_message.emit("❄️ Cluster frozen for 20 ticks — it will spread its DNA!")
 
 
@@ -192,11 +208,13 @@ func event_mutation_wave() -> void:
 	for cl in cluster_mgr.clusters:
 		(cl as Cluster).fitness_score = 50.0
 		cluster_mgr.update_fitness((cl as Cluster).id, 0.0)
-	var timer := get_tree().create_timer(10.0 * grid.tick_interval)
-	timer.timeout.connect(func() -> void:
-		grid.base_mutation_rate = saved_rate
-		status_message.emit("🌊 Mutation wave subsided.")
-	)
+	# Schedule mutation-rate restore after 10 simulation ticks (speed-invariant)
+	_scheduled_effects.append({
+		"end_tick": grid.tick + 10,
+		"callback": func() -> void:
+			grid.base_mutation_rate = saved_rate
+			status_message.emit("🌊 Mutation wave subsided."),
+	})
 	status_message.emit("🌊 Mutation wave! All fitness reset. 10 ticks of chaos.")
 
 

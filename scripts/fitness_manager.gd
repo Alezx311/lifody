@@ -15,6 +15,9 @@ var melody_library: Array = []
 ## Per-cluster mute state (cluster_id → bool)
 var muted_clusters: Dictionary = {}
 
+## Cache of last-computed library bonus per cluster (recomputed every 10 ticks).
+var _last_lib_bonus: Dictionary = {}  # cluster_id → float
+
 ## Rewind budget (3 per session)
 var rewinds_left: int = 3
 
@@ -36,18 +39,30 @@ func on_tick(_tick_num: int) -> void:
 	if inject_cooldown > 0:
 		inject_cooldown -= 1
 
+	var lib_check: bool = (_tick_num % 10 == 0)
+	var alive_ids: Dictionary = {}
+
 	for cl in cluster_mgr.clusters:
 		var cid: int = (cl as Cluster).id
+		alive_ids[cid] = true
 		# Natural decay
 		(cl as Cluster).tick_decay()
-		# Stable cluster bonus
+		# Stable cluster bonus (reduced from +5.0 to +0.5; decay is -0.1/tick so net ~+0.4)
 		if (cl as Cluster).state == "stable":
-			(cl as Cluster).modify_fitness(5.0)
-		# Library similarity bonus
-		var bonus: float = _library_bonus(cl as Cluster)
-		(cl as Cluster).modify_fitness(bonus)
+			(cl as Cluster).modify_fitness(0.5)
+		# Library similarity bonus — recomputed every 10 ticks, applied only then
+		if lib_check:
+			var bonus: float = _library_bonus(cl as Cluster)
+			_last_lib_bonus[cid] = bonus
+			if bonus > 0.0:
+				(cl as Cluster).modify_fitness(bonus)
 		cluster_mgr.update_fitness(cid, 0.0)  # sync fitness store
 		fitness_changed.emit(cid, (cl as Cluster).fitness_score)
+
+	# Evict cached bonuses for dead clusters
+	for cid in _last_lib_bonus.keys().duplicate():
+		if not alive_ids.has(cid):
+			_last_lib_bonus.erase(cid)
 
 
 # ────────────────────────────────────────────────────────────────────────────

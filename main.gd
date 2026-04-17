@@ -18,6 +18,16 @@ var quad_mode: QuadGridMode = null
 var quad_ui: QuadGridUI = null
 var _in_quad_mode: bool = false
 
+# ── Chips From Audio panel (overlay on the main game) ────────────────────────
+var _chips_analyzer: ChipsAudioAnalyzer = null
+var _chips_panel:    ChipsDebugPanel    = null
+var _chips_dialog:   FileDialog         = null
+var _chips_active:   bool = false
+var _chips_energy:   Array = []   # latest [oct][12] energy snapshot
+var _chips_dominant: int  = 0     # pitch with highest energy
+var _chips_affinity: Array = []   # 12×12 music-theory affinity for consonance display
+var _chips_pitch_cells: Dictionary = {}  # pitch → Array[Vector2i] (precomputed per tonal layout)
+
 var _panning: bool = false
 var _fit_zoom: float = 1.0
 
@@ -63,6 +73,7 @@ func _create_systems() -> void:
 	fitness_mgr = FitnessManager.new()
 	fitness_mgr.setup(cluster_mgr, audio)
 	add_child(fitness_mgr)
+	audio.setup_fitness(fitness_mgr)
 
 	# 6. Tool manager
 	tool_mgr = ToolManager.new()
@@ -78,6 +89,11 @@ func _create_systems() -> void:
 	evolution_tracker = EvolutionTracker.new()
 	evolution_tracker.setup(grid, cluster_mgr)
 	add_child(evolution_tracker)
+
+	# 7.75. Chips audio analyser (always present, panel shown on demand)
+	_chips_analyzer = ChipsAudioAnalyzer.new()
+	add_child(_chips_analyzer)
+	_build_chips_affinity()
 
 	# 8. Game UI (CanvasLayer — renders on top)
 	ui = GameUI.new()
@@ -111,6 +127,7 @@ func _wire_signals() -> void:
 	get_viewport().size_changed.connect(_on_viewport_resized)
 
 	ui.quad_mode_requested.connect(_on_quad_mode_requested)
+	ui.chips_mode_requested.connect(_toggle_chips_panel)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -186,11 +203,22 @@ func _start_game(config: Dictionary = {}) -> void:
 	ui.sync_pause_button()
 
 
+func _process(_delta: float) -> void:
+	# Chips panel: update freq display + progress at frame rate for smooth visuals
+	if _chips_active and _chips_analyzer.is_playing() and _chips_panel:
+		_chips_energy   = _chips_analyzer.analyze()
+		_chips_dominant = _chips_calc_dominant()
+		_chips_panel.update_freq_display(_chips_energy)
+		_chips_panel.update_progress(_chips_analyzer.get_position(), _chips_analyzer.get_length())
+		_chips_panel.update_consonance_display(_chips_dominant, _chips_affinity)
+
+
 func _on_tick(tick_num: int) -> void:
 	cluster_mgr.detect_clusters()
 	fitness_mgr.on_tick(tick_num)
 	catalyst.on_tick(tick_num)
 	ui.update_tick(tick_num)
+	_chips_tick_spawn()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -349,6 +377,7 @@ func _on_grid_resize(w: int, h: int, cs: int) -> void:
 	ui.update_tick(0)
 	_reset_camera()
 	_update_camera_limits()
+	_chips_rebuild_pitch_cells()
 
 
 func _on_viewport_resized() -> void:
@@ -476,3 +505,131 @@ func _clamp_camera() -> void:
 	var max_y: float = float(camera.limit_bottom) - half_h
 	camera.position.x = clampf(camera.position.x, minf(min_x, max_x), maxf(min_x, max_x))
 	camera.position.y = clampf(camera.position.y, minf(min_y, max_y), maxf(min_y, max_y))
+
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Chips From Audio panel (overlay — main game keeps running)
+# ────────────────────────────────────────────────────────────────────────────
+
+func _toggle_chips_panel() -> void:
+	if _chips_active:
+		_chips_active = false
+		_chips_analyzer.stop()
+		if _chips_panel:
+			_chips_panel.queue_free()
+			_chips_panel = null
+		if _chips_dialog:
+			_chips_dialog.queue_free()
+			_chips_dialog = null
+	else:
+		_chips_active = true
+		_chips_rebuild_pitch_cells()
+
+		_chips_panel = ChipsDebugPanel.new()
+		add_child(_chips_panel)
+		_chips_panel.setup(_chips_analyzer, null, audio)
+		_chips_panel.back_requested.connect(_toggle_chips_panel)
+		_chips_panel.file_open_requested.connect(func() -> void:
+			if _chips_dialog: _chips_dialog.popup_centered()
+		)
+		_chips_panel.play_requested.connect(func() -> void: _chips_analyzer.play())
+		_chips_panel.stop_requested.connect(func() -> void: _chips_analyzer.stop())
+		_chips_panel.spawn_note_requested.connect(func(pitch: int) -> void:
+			var rate: int = _chips_panel.get_spawn_rate() if _chips_panel else 3
+			_chips_spawn_in_region(pitch, rate * 4)
+		)
+		_chips_analyzer.file_loaded.connect(func(path: String) -> void:
+			if _chips_panel: _chips_panel.set_file_label(path.get_file())
+		)
+
+		_chips_dialog = FileDialog.new()
+		_chips_dialog.access = FileDialog.ACCESS_FILESYSTEM
+		_chips_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+		_chips_dialog.filters = ["*.ogg ; OGG Vorbis", "*.mp3 ; MP3"]
+		_chips_dialog.size = Vector2i(720, 480)
+		_chips_dialog.file_selected.connect(func(path: String) -> void:
+			_chips_analyzer.load_file(path)
+		)
+		add_child(_chips_dialog)
+
+
+## Precompute pitch(0-11) → grid positions whose tonal region has that root.
+func _chips_rebuild_pitch_cells() -> void:
+	_chips_pitch_cells = {}
+	for n in 12:
+		_chips_pitch_cells[n] = []
+	for y in LifeGrid.GRID_H:
+		for x in LifeGrid.GRID_W:
+			var reg: int = tonal.get_region_id(x, y)
+			var root: int = tonal.get_root(reg)
+			(_chips_pitch_cells[root] as Array).append(Vector2i(x, y))
+
+
+## Spawn cells in tonal regions whose root == pitch. Count is capped.
+func _chips_spawn_in_region(pitch: int, count: int) -> void:
+	var positions: Array = _chips_pitch_cells.get(pitch, [])
+	if positions.is_empty():
+		return
+	var spawned: int = 0
+	var tries: int = 0
+	while spawned < count and tries < count * 6:
+		var idx: int = randi() % positions.size()
+		var pos := positions[idx] as Vector2i
+		if not grid.cells[pos.y][pos.x].alive:
+			grid._spawn_cell(pos.x, pos.y)
+			spawned += 1
+		tries += 1
+	if spawned > 0:
+		grid.queue_redraw()
+
+
+## Called each tick to spawn cells from audio analysis.
+func _chips_tick_spawn() -> void:
+	if not _chips_active or not _chips_analyzer.is_playing() or _chips_energy.is_empty():
+		return
+	var threshold: float = _chips_panel.get_spawn_threshold() if _chips_panel else 0.15
+	var rate: int        = _chips_panel.get_spawn_rate() if _chips_panel else 2
+
+	for o in _chips_energy.size():
+		var row: Array = _chips_energy[o]
+		for n in 12:
+			if float(row[n]) > threshold:
+				_chips_spawn_in_region(n, rate)
+
+	# Auto-consonant: additionally spawn harmonically related notes
+	var auto_str: float = _chips_panel.get_auto_consonant_strength() if _chips_panel else 0.0
+	if auto_str > 0.01:
+		for n in 12:
+			var aff: float = _chips_affinity[_chips_dominant][n]
+			if aff > 0.4 and randf() < aff * auto_str * 0.4:
+				_chips_spawn_in_region(n, 1)
+
+
+## Returns the pitch class (0–11) with the highest total energy.
+func _chips_calc_dominant() -> int:
+	if _chips_energy.is_empty():
+		return 0
+	var sums: Array = []
+	for _n in 12:
+		sums.append(0.0)
+	for oct_data in _chips_energy:
+		for n in 12:
+			sums[n] += float(oct_data[n])
+	var best_e := 0.0
+	var best_n := 0
+	for n in 12:
+		if sums[n] > best_e:
+			best_e = sums[n]
+			best_n = n
+	return best_n
+
+
+## Build 12×12 music-theory affinity (used for consonance button colouring).
+func _build_chips_affinity() -> void:
+	var by_interval: Array = [1.0, -0.8, -0.2, 0.6, 0.8, 0.5, -0.9, 0.9, 0.4, 0.6, -0.1, -0.7]
+	_chips_affinity = []
+	for i in 12:
+		var row: Array = []
+		for j in 12:
+			row.append(by_interval[(j - i + 12) % 12])
+		_chips_affinity.append(row)
